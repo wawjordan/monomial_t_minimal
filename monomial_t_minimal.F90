@@ -142,7 +142,7 @@ contains
       ! idx(curr_total_degree+1) = cnt + 1
       nSub = curr_total_degree + 1
       N_full_terms = (curr_total_degree+1) ** n_dim
-      do j = 0,N_full_terms
+      do j = 0,N_full_terms-1
         tmp_exp = global2local(j+1,nsub)-1
         if ( sum(tmp_exp) == curr_total_degree ) then
           cnt = cnt + 1
