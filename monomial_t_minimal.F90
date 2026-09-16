@@ -113,6 +113,7 @@ module combinatorics
   private
   public :: nchoosek
   public :: get_exponents
+  public :: build_up_idx
 contains
 
   pure function nchoosek( n, k ) result( c )
@@ -155,7 +156,7 @@ contains
 
     ! determine corresponding gradient terms of a given term
     if (present(diff_idx)) then
-      diff_idx = -1 ! last terms (idx(degree)+1:idx(degree+1)) are not defined
+      diff_idx = 0 ! last terms (idx(degree)+1:idx(degree+1)) are not defined
       if ( degree==0) return
       do j = 1,idx(degree-1)
         tmp_exp = exponents(:,j)
@@ -170,6 +171,26 @@ contains
       end do
     end if
   end subroutine get_exponents
+
+  pure subroutine build_up_idx( n_dim, degree, n_terms, exponents, idx, up_idx )
+    integer, intent(in) :: n_dim, degree, n_terms
+    integer, dimension(n_dim,n_terms), intent(in)  :: exponents
+    integer, dimension(0:degree),      intent(in)  :: idx
+    integer, dimension(n_dim,n_terms), intent(out) :: up_idx
+    integer :: t, i, j, d_t
+    up_idx = 0
+    if ( degree == 0 ) return
+    do t = 1, idx(degree-1)                  ! terms of degree <= degree-1
+      d_t = sum( exponents(:,t) )
+      do i = idx(d_t)+1, idx(d_t+1)          ! slab of degree d_t + 1
+        if ( sum( abs( exponents(:,i) - exponents(:,t) ) ) == 1 ) then
+          do j = 1, n_dim                    ! the single coordinate that went up
+            if ( exponents(j,i) - exponents(j,t) == 1 ) up_idx(j,t) = i
+          end do
+        end if
+      end do
+    end do
+  end subroutine build_up_idx
 
 end module combinatorics
 
@@ -287,6 +308,7 @@ contains
       end do
     end do
     term = 1
+    d    = 0
     grad_idx = this%diff_idx(:,term) ! indices to extract gradient information
     out_string=''
     call write_integer_tuple([d,term],tmp_string)
@@ -302,15 +324,39 @@ contains
 
 end module monomial_basis_derived_type
 
+! program main
+!   use monomial_basis_derived_type, only : monomial_basis_t
+!   implicit none
+!   integer :: n_dim, rec_degree
+!   type(monomial_basis_t) :: p
+!   n_dim      = 2
+!   rec_degree = 4
+!   p = monomial_basis_t( rec_degree, n_dim )
+!   call p%check_gradient_indexing()
+!   call p%destroy()
+! end program main
+
 program main
-  use set_precision, only : dp
-  use monomial_basis_derived_type, only : monomial_basis_t
+  use combinatorics, only : nchoosek, get_exponents, build_up_idx
+  use string_stuff,  only : write_integer_tuple
   implicit none
-  integer :: n_dim, rec_degree
-  type(monomial_basis_t) :: p
-  n_dim      = 2
-  rec_degree = 4
-  p = monomial_basis_t( rec_degree, n_dim )
-  call p%check_gradient_indexing()
-  call p%destroy()
+  integer :: n_dim, degree, n_terms
+  integer :: j
+  integer, dimension(:,:), allocatable :: exponents, diff_idx, up_idx
+  integer, dimension(:),   allocatable :: idx, exp, order
+  n_dim  = 3
+  degree = 8
+  n_terms = nchoosek( n_dim + degree, degree )
+  allocate( exponents(n_dim,n_terms), idx(0:degree), &
+            diff_idx( n_dim,n_terms),                &
+            up_idx(   n_dim,n_terms) )
+
+  call get_exponents(n_dim,degree,n_terms,exponents,idx,diff_idx=diff_idx)
+  call build_up_idx( n_dim,degree,n_terms,exponents,idx,up_idx)
+
+  do j = 1,n_terms
+    ! write(*,*) j, ':', exponents(:,j), '|', diff_idx(:,j) - up_idx(:,j)
+    write(*,*) j, ':', exponents(:,j), '|', diff_idx(:,j), '|', up_idx(:,j)
+  end do
+  deallocate( exponents, idx, diff_idx, up_idx )
 end program main
