@@ -223,42 +223,35 @@ contains
     if ( allocated(this%diff_idx) )  deallocate( this%diff_idx )
   end subroutine destroy_monomial_basis_t
 
-  pure subroutine evaluate_monomial(this,term,x,val,coef)
+  pure subroutine evaluate_monomial(this,term,x,val)
     use set_precision, only : dp
     use set_constants, only : one
     class(monomial_basis_t), intent(in)  :: this
     integer,                 intent(in)  :: term
     real(dp), dimension(:),  intent(in)  :: x
-    real(dp),                        intent(out) :: val
-    integer,                         intent(out) :: coef
+    real(dp),                intent(out) :: val ! x^[a]
     integer :: d, i
-    val  = one ! << x^[a] >>
-    coef = 1   ! << [a]! >>
+    val  = one
     do d = 1,this%n_dim
       do i = this%exponents(d,term),1,-1
         val  = val * x(d)
-        coef = coef * i
       end do
     end do
   end subroutine evaluate_monomial
 
-  pure subroutine evaluate_monomial_derivative( this, term, x, order,          &
-                                                dval, dcoef, coef )
+  pure subroutine evaluate_monomial_derivative( this, term, x, order, dval )
     use set_precision, only : dp
     use set_constants, only : zero, one
     class(monomial_basis_t),         intent(in)  :: this
     integer,                         intent(in)  :: term
     real(dp), dimension(:),          intent(in)  :: x
     integer,  dimension(:),          intent(in)  :: order
-    real(dp),                        intent(out) :: dval
-    integer,                         intent(out) :: dcoef, coef
-    integer :: d, i
-    
-    dcoef = 1 ! D^[b](x^[a]) = ([a]!)/([a]-[b])! x^[a-b] => << ([a]!)/([a]-[b])! >>
-    coef  = 1 ! << ([a]-[b])! >>
-    dval  = zero ! << D^[b](x^[a]) >>
+    real(dp),                        intent(out) :: dval ! D^[b](x^[a])
+    integer :: d, i, dcoef
+    ! D^[b](x^[a]) = ([a]!)/([a]-[b])! x^[a-b]
+    dval  = zero
     if ( any( this%exponents(:,term)-order(1:this%n_dim) < 0 ) ) return
-
+    dcoef = 1
     dval  = one
     do d = 1,this%n_dim
       do i = this%exponents(d,term),this%exponents(d,term)-order(d)+1,-1
@@ -266,9 +259,9 @@ contains
       end do
       do i = this%exponents(d,term)-order(d),1,-1
         dval  = dval * x(d)
-        coef = coef * i
       end do
     end do
+    dval = real(dcoef,dp) * dval
   end subroutine evaluate_monomial_derivative
 
   subroutine check_gradient_indexing( this )
