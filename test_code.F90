@@ -160,6 +160,7 @@ end module index_conversion
 module combinatorics
   implicit none
   private
+  public :: rand_int_in_range
   public :: nchoosek
   public :: get_exponents
   public :: mono_rank_grlex
@@ -181,6 +182,15 @@ module combinatorics
           [( ( fact_(i_) / merge( pfact_(n_max + i_ - j_), 1, j_ <= i_ ), &
            i_ = 0, n_max ), j_ = 0, n_max ) ], [n_max+1, n_max+1] )
 contains
+
+  impure elemental function rand_int_in_range(lo,hi) result(num)
+    use set_precision, only : dp
+    integer, intent(in) :: lo, hi
+    integer             :: num
+    real(dp) :: harvest
+    call random_number(harvest)
+    num = nint( harvest*real(hi-lo,dp) + real(lo,dp) )
+  end function rand_int_in_range
 
   pure function get_deriv_coef_v1(n_dim,exponents,diff_order) result(dcoef)
     integer,               intent(in) :: n_dim
@@ -204,14 +214,21 @@ contains
     integer, dimension(:), intent(in) :: exponents, diff_order
     integer                           :: dcoef
     integer :: d
-    dcoef = 1
-    do d = 1,n_dim
-      if ( exponents(d) > n_max .or. exponents(d)<diff_order(d) ) then
-        dcoef = 0
-        return
-      end if
-      dcoef = dcoef * fall_(exponents(d),diff_order(d))
-    end do
+    ! dcoef = 1
+    ! do d = 1,n_dim
+    !   if ( exponents(d) > n_max .or. exponents(d)<diff_order(d) ) then
+    !     dcoef = 0
+    !     return
+    !   end if
+    !   dcoef = dcoef * fall_(exponents(d),diff_order(d))
+    ! end do
+    dcoef = 0
+    if ( any( (exponents > n_max).or.(exponents<diff_order) ) ) return
+    ! dcoef = 1
+    ! do d = 1,n_dim
+    !   dcoef = dcoef * fall_(exponents(d),diff_order(d))
+    ! end do
+    dcoef = product( fall_(exponents,diff_order) )
   end function get_deriv_coef_v2
 
   pure function nchoosek( n, k ) result( c )
@@ -587,8 +604,51 @@ end module combinatorics
 !   deallocate( exponents, idx, diff_idx )
 ! end program main
 
+! program main
+!   use set_precision, only : dp
+!   use combinatorics, only : nchoosek, get_exponents
+!   use combinatorics, only : mono_rank_grlex, mono_rank_grlex2, mono_rank_grlex3, mono_unrank_grlex2, mono_unrank_grlex3
+!   use combinatorics, only : get_diff_idx
+!   use combinatorics, only : get_deriv_coef_v1, get_deriv_coef_v2
+!   use timer_derived_type, only : basic_timer_t
+!   implicit none
+!   type(basic_timer_t) :: timer
+!   integer :: n_terms, n_dim, degree, i, j, dcoef1, dcoef2, max_coef
+!   integer, dimension(:,:), allocatable :: exponents, diff_idx, diff_idx2
+!   integer, dimension(:),   allocatable :: idx, exp, order
+
+!   n_dim  = 7
+!   degree = 8
+!   n_terms = nchoosek( n_dim + degree, degree )
+!   allocate( exponents(n_dim,n_terms), idx(0:degree), diff_idx(n_dim,n_terms), diff_idx2(n_dim,n_terms), order(n_dim) )
+
+!   call get_exponents(n_dim,degree,n_terms,exponents,idx,diff_idx=diff_idx)
+
+!   ! do i = 1,n_terms
+!   do i = idx(degree-1)+1,idx(degree)
+!     exp = exponents(:,i)
+!     do j = idx(0)+1,idx(degree-1)
+!       order = exponents(:,j)
+!       dcoef1 = get_deriv_coef_v1(n_dim,exp,order)
+!       dcoef2 = get_deriv_coef_v2(n_dim,exp,order)
+!       max_coef = max(max_coef,dcoef1)
+!       ! write(*,'(I2," (",2(I2,","),I2,"), (",2(I2,","),I2,") : ",I0)') i, exp, order, dcoef1
+!       if (dcoef1 /= dcoef2 ) then
+!         write(*,*) 'Error!'
+!         stop
+!       end if
+!     end do
+!   end do
+
+!   write(*,*) max_coef
+!   deallocate( exponents, idx, diff_idx )
+! end program main
+
+
 program main
   use set_precision, only : dp
+  use set_constants, only : zero, one
+  use combinatorics, only : rand_int_in_range
   use combinatorics, only : nchoosek, get_exponents
   use combinatorics, only : mono_rank_grlex, mono_rank_grlex2, mono_rank_grlex3, mono_unrank_grlex2, mono_unrank_grlex3
   use combinatorics, only : get_diff_idx
@@ -596,33 +656,54 @@ program main
   use timer_derived_type, only : basic_timer_t
   implicit none
   type(basic_timer_t) :: timer
-  integer :: n_terms, n_dim, degree, i, j, dcoef1, dcoef2, max_coef
-  integer, dimension(:,:), allocatable :: exponents, diff_idx, diff_idx2
-  integer, dimension(:),   allocatable :: idx, exp, order
-
-  n_dim  = 7
+  integer :: n_terms, n_dim, degree, dcoef, junk
+  integer :: i, j, k, m, n_iter, n_samples
+  integer, dimension(:,:), allocatable :: exponents, diff_idx, rand_order
+  integer, dimension(:),   allocatable :: idx, exp, order, rand_exp, rand_idx
+  real(dp) :: t_avg, xnsamp
+  n_samples = 10000
+  n_iter = 1000000
+  n_dim  = 3
   degree = 8
   n_terms = nchoosek( n_dim + degree, degree )
-  allocate( exponents(n_dim,n_terms), idx(0:degree), diff_idx(n_dim,n_terms), diff_idx2(n_dim,n_terms), order(n_dim) )
-
+  allocate( exponents(n_dim,n_terms), idx(0:degree), diff_idx(n_dim,n_terms), order(n_dim) )
+  allocate( rand_order(n_dim,n_iter), rand_idx(n_iter), rand_exp(n_iter) )
   call get_exponents(n_dim,degree,n_terms,exponents,idx,diff_idx=diff_idx)
 
-  ! do i = 1,n_terms
-  do i = idx(degree-1)+1,idx(degree)
-    exp = exponents(:,i)
-    do j = idx(0)+1,idx(degree-1)
-      order = exponents(:,j)
-      dcoef1 = get_deriv_coef_v1(n_dim,exp,order)
-      dcoef2 = get_deriv_coef_v2(n_dim,exp,order)
-      max_coef = max(max_coef,dcoef1)
-      ! write(*,'(I2," (",2(I2,","),I2,"), (",2(I2,","),I2,") : ",I0)') i, exp, order, dcoef1
-      if (dcoef1 /= dcoef2 ) then
-        write(*,*) 'Error!'
-        stop
-      end if
-    end do
-  end do
+  xnsamp = one / real(n_samples,dp)
+  ! t_avg = zero
+  ! do m = 1,n_samples
+  !   call timer%tic()
+  !   do k = 1,n_iter
+  !     junk = 0
+  !     do i = 1,n_terms
+  !       exp = exponents(:,i)
+  !       do j = idx(0)+1,idx(degree-1)
+  !         order = exponents(:,j)
+  !         dcoef = get_deriv_coef_v1(n_dim,exp,order)
+  !         junk = junk + dcoef
+  !       end do
+  !     end do
+  !   end do
+  !   t_avg = t_avg + timer%toc()
+  ! end do
+  ! write(*,*) t_avg*xnsamp
 
-  write(*,*) max_coef
+  rand_idx   = rand_int_in_range(spread(1,1,n_iter),spread(n_terms,1,n_iter))
+  rand_order = rand_int_in_range(spread(spread(0,1,n_dim),2,n_iter),exponents(:,rand_idx))
+  t_avg = zero
+  do m = 1,n_samples
+    junk = 0
+    call timer%tic()
+    do k = 1,n_iter
+      dcoef = get_deriv_coef_v2(n_dim,exponents(:,rand_idx(k)),rand_order(:,k))
+      junk = junk + dcoef
+    end do
+    t_avg = t_avg + timer%toc()
+  end do
+  write(*,*) t_avg*xnsamp
+
+  deallocate( rand_order, rand_exp )
+
   deallocate( exponents, idx, diff_idx )
 end program main

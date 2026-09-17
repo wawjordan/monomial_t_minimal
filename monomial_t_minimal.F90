@@ -13,9 +13,11 @@ module set_constants
   implicit none
   private
   public :: zero, one
+  public :: near_zero
   public :: max_text_line_length
   real(dp), parameter :: zero      = 0.0_dp
   real(dp), parameter :: one       = 1.0_dp
+  real(dp), parameter :: near_zero = epsilon(one)
   integer,  parameter :: max_text_line_length = 1024
 end module set_constants
 
@@ -324,39 +326,148 @@ contains
 
 end module monomial_basis_derived_type
 
-! program main
-!   use monomial_basis_derived_type, only : monomial_basis_t
-!   implicit none
-!   integer :: n_dim, rec_degree
-!   type(monomial_basis_t) :: p
-!   n_dim      = 2
-!   rec_degree = 4
-!   p = monomial_basis_t( rec_degree, n_dim )
-!   call p%check_gradient_indexing()
-!   call p%destroy()
-! end program main
+!> moments_map.F90 -- per-stencil linear map for k-exact moment machinery.
+!!
+!! Provides the pullback matrix K(A) of a constant linear map
+!!   xi = A (x - x_i)
+!! on the graded monomial moment space:
+!!   (A y)^alpha_m = sum_n K(m,n) y^{alpha_n}.
+!! Then, for any moment vector nu (moments of some cell about x_i,
+!! e.g. produced by the existing parallel-axis routine),
+!!   mu = K * nu
+!! are the moments of the same cell in mapped coordinates, and
+!!   D^beta_x u(x_i) = beta! * (K^T c)_{n_beta}
+!! recovers physical derivatives from mapped coefficients c.
+module moments_map
+  use set_precision, only : dp
+  use set_constants, only : zero, one, near_zero
+  use monomial_basis_derived_type, only : monomial_basis_t
+  use combinatorics,               only : build_up_idx
+  implicit none
+  private
+  public :: build_moment_map
+  public :: apply_moment_map        ! trivial, kept for readability at call sites
+  public :: mapped_derivatives
+
+contains
+
+  !> Assemble K(n_terms, n_terms) for the map A(d,d).
+  !! Graded induction:  row(child) = (A y)_l * row(parent),
+  !! child exponent = parent exponent + e_l, resolved via up_idx.
+  !! Canonical-parent guard: only use direction l if all entries of the
+  !! child exponent beyond l vanish (each row written exactly once).
+  subroutine build_moment_map( basis, A, K )
+    class(monomial_basis_t), intent(in)  :: basis
+    real(dp),                intent(in)  :: A(basis%n_dim,basis%n_dim)
+    real(dp),                intent(out) :: K(basis%n_terms,basis%n_terms)
+
+    integer, allocatable :: up(:,:)
+    integer :: p, l, c, n, m, np, n_dim, n_terms
+
+    n_dim   = basis%n_dim
+    n_terms = basis%n_terms
+
+    allocate( up(n_dim,n_terms) )
+    call build_up_idx( n_dim, basis%total_degree, n_terms, &
+                       basis%exponents, basis%idx, up )
+
+    K = zero
+    K(1,1) = one                          ! alpha = 0 : (A y)^0 = 1
+
+    do p = 1, n_terms                     ! parents in graded order
+      do l = 1, n_dim
+        c = up(l,p)                       ! child: alpha_p + e_l
+        if (c == 0) cycle                 ! degree k slab: no child
+        ! canonical parent: child must be zero in directions > l
+        if ( any( basis%exponents(l+1:n_dim, c) /= 0 ) ) cycle
+        ! K(c,:) = (A y)_l * K(p,:) ;  (A y)_l = sum_m A(l,m) y_m
+        do n = 1, n_terms
+          if ( abs( K(p,n) ) <= near_zero ) cycle     ! sparse skip
+          do m = 1, n_dim
+            np = up(m,n)                  ! exponent alpha_n + e_m
+            if (np == 0) cycle
+            K(c,np) = K(c,np) + A(l,m) * K(p,n)
+          end do
+        end do
+      end do
+    end do
+    deallocate( up )
+  end subroutine build_moment_map
+
+  !> mu = K nu : moments about the same origin, mapped coordinates.
+  pure subroutine apply_moment_map( K, nu, mu )
+    real(dp), intent(in)  :: K(:,:), nu(:)
+    real(dp), intent(out) :: mu(:)
+    mu = matmul( K, nu )
+  end subroutine apply_moment_map
+
+  !> Physical derivatives at x_i from mapped-basis coefficients c.
+  !! D^beta u(x_i) = beta! * sum_m c_m K(m, n_beta) = beta!*(K^T c)_{n_beta}
+  pure subroutine mapped_derivatives( basis, K, c, du )
+    class(monomial_basis_t), intent(in)  :: basis
+    real(dp),                intent(in)  :: K(basis%n_terms,basis%n_terms)
+    real(dp),                intent(in)  :: c(basis%n_terms)
+    real(dp),                intent(out) :: du(basis%n_terms) ! du(n) = D^alpha_n u
+
+    integer :: i, n, d, fact
+    du = matmul( transpose(K), c )
+    do n = 1, basis%n_terms
+      fact = 1
+      do d = 1, basis%n_dim
+        fact = fact * product( [ (i, i = 1, basis%exponents(d,n)) ] )
+      end do
+      du(n) = du(n) * real(fact, dp)      ! multinomial alpha!
+    end do
+  end subroutine mapped_derivatives
+
+end module moments_map
 
 program main
-  use combinatorics, only : nchoosek, get_exponents, build_up_idx
-  use string_stuff,  only : write_integer_tuple
+  use set_precision, only : dp
+  use set_constants, only : zero, one
+  use monomial_basis_derived_type, only : monomial_basis_t
+  use moments_map, only : build_moment_map
   implicit none
-  integer :: n_dim, degree, n_terms
-  integer :: j
-  integer, dimension(:,:), allocatable :: exponents, diff_idx, up_idx
-  integer, dimension(:),   allocatable :: idx, exp, order
-  n_dim  = 3
-  degree = 8
-  n_terms = nchoosek( n_dim + degree, degree )
-  allocate( exponents(n_dim,n_terms), idx(0:degree), &
-            diff_idx( n_dim,n_terms),                &
-            up_idx(   n_dim,n_terms) )
+  integer :: n_dim, rec_degree
+  integer :: i, j
+  type(monomial_basis_t) :: p
+  real(dp), dimension(:,:), allocatable :: A, K
+  n_dim      = 2
+  rec_degree = 4
 
-  call get_exponents(n_dim,degree,n_terms,exponents,idx,diff_idx=diff_idx)
-  call build_up_idx( n_dim,degree,n_terms,exponents,idx,up_idx)
-
-  do j = 1,n_terms
-    ! write(*,*) j, ':', exponents(:,j), '|', diff_idx(:,j) - up_idx(:,j)
-    write(*,*) j, ':', exponents(:,j), '|', diff_idx(:,j), '|', up_idx(:,j)
+  p = monomial_basis_t( rec_degree, n_dim )
+  allocate( A(p%n_dim,p%n_dim), K(p%n_terms,p%n_terms) )
+  A = zero
+  do i = 1,n_dim
+    A(i,i) = one
   end do
-  deallocate( exponents, idx, diff_idx, up_idx )
+  call build_moment_map( p, A, K )
+  call p%check_gradient_indexing()
+  call p%destroy()
+  deallocate( A, K )
 end program main
+
+! program main
+!   use combinatorics, only : nchoosek, get_exponents, build_up_idx
+!   use string_stuff,  only : write_integer_tuple
+!   implicit none
+!   integer :: n_dim, degree, n_terms
+!   integer :: j
+!   integer, dimension(:,:), allocatable :: exponents, diff_idx, up_idx
+!   integer, dimension(:),   allocatable :: idx, exp, order
+!   n_dim  = 3
+!   degree = 8
+!   n_terms = nchoosek( n_dim + degree, degree )
+!   allocate( exponents(n_dim,n_terms), idx(0:degree), &
+!             diff_idx( n_dim,n_terms),                &
+!             up_idx(   n_dim,n_terms) )
+
+!   call get_exponents(n_dim,degree,n_terms,exponents,idx,diff_idx=diff_idx)
+!   call build_up_idx( n_dim,degree,n_terms,exponents,idx,up_idx)
+
+!   do j = 1,n_terms
+!     ! write(*,*) j, ':', exponents(:,j), '|', diff_idx(:,j) - up_idx(:,j)
+!     write(*,*) j, ':', exponents(:,j), '|', diff_idx(:,j), '|', up_idx(:,j)
+!   end do
+!   deallocate( exponents, idx, diff_idx, up_idx )
+! end program main
